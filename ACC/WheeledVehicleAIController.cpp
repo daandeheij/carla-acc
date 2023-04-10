@@ -139,10 +139,95 @@ static bool DetectVehicleAhead(const ACarlaWheeledVehicle &Vehicle, FHitResult &
   return false;
 }
 
+float AWheeledVehicleAIController::CalculateTargetSpeed(const float Speed, FHitResult& ClosestVehicle, const float DeltaTime, bool& accControl)
+{
+    float threshold_traffic_jam_speed = 35f;
+    if (speed > threshold_traffic_jam_speed) //not driving in traffic jam, return normal ACC
+    {
+        return CalculateTargetSpeedACC(Speed, ClosestVehicle, DeltaTime, accControl)
+    }
+    else //in traffic jam, obtain JAD speed
+    {
+
+    }
+
+}
+
+float AWheeledVehicleAIController::CalculateTargetSpeedJAD(const float Speed, FHitResult& ClosestVehicle, const float DeltaTime, bool& accControl)
+{
+    float max_brake = 9.8f; //m/s^2
+    float max_accel = 5.4f; //m/s^2
+    float min_brake = 2.9f; //m/s^2
+    float Throttle;
+
+    AController* VehicleAController = (ClosestVehicle.Actor)->GetInstigatorController();
+    AWheeledVehicleAIController* VehicleAVehControl = dynamic_cast<AWheeledVehicleAIController*> (VehicleAController);
+    if (VehicleAVehControl != nullptr)
+    {
+        ACarlaWheeledVehicle* VehicleA = VehicleAVehControl->GetPossessedVehicle();
+        float VelocityA = VehicleA->GetVehicleForwardSpeed() / 100.0f; // m/s
+        float VelocityB = Speed / 3.6f; // m/s
+        float VelocityRel = VelocityB - VelocityA;
+        // if not modified 1 unit (returned by ClosestVehicle.Distance) is 1 cm
+        float currentDist = ClosestVehicle.Distance / 100.0f; // meters
+        // calculate safety distance
+        float safetyDist = VelocityB * 0.05 + max_accel * 0.00125 - pow(VelocityA, 2) / (2 * max_brake) + pow((VelocityB + 0.05 * max_accel), 2) / (2 * min_brake);
+        if (safetyDist < 3)
+        {
+            safetyDist = 3; //minimum distance between two vehicles
+        }
+        float distAvailable = currentDist - safetyDist;
+        float timeAvailable = distAvailable / (VelocityRel);
+        if (distAvailable < 0) // current distance is less than the safety distance
+        {
+            // the host vehicle needs to stop
+            Throttle = -1.0f;
+            accControl = false;
+        }
+        else if (currentDist >= 2 * safetyDist || (timeAvailable > 5 && VelocityB > 10)) // the front vehicle is too far
+        {
+            // the host vehicle moves normally
+            Throttle = Move(Speed);
+            accControl = false;
+        }
+        else
+        {
+            if (VelocityA < 0.01f && VelocityB < 0.01f && distAvailable < 2)
+            {
+                return -1.0f;
+            }
+            float Acceleration;
+            if (VelocityRel < 0) // the front car is moving faster
+            {
+                float desiredSpeed = (VelocityA * 1.1 > SpeedLimit) ? SpeedLimit : (VelocityA * 1.1);
+                Acceleration = (desiredSpeed - VelocityB) / 5;
+            }
+            else // the host car is moving faster
+            {
+                Acceleration = (VelocityA - VelocityB) / timeAvailable;
+            }
+            float TargetSpeed = Acceleration * DeltaTime + VelocityB;
+            if (TargetSpeed > SpeedLimit / 3.6f)
+            {
+                TargetSpeed = SpeedLimit;
+            }
+            // calculate the throttle with the pid controller
+            Throttle = run_step(VelocityB * 3.6f, TargetSpeed * 3.6f, DeltaTime);
+        }
+
+        return Throttle;
+    }
+    else
+    {
+        UE_LOG(LogCarla, Error, TEXT("Preceding Vehicle Detected but its controller is not WheeledVehicleAIController!"));
+        return 1;
+    }
+}
+
 // calculate the target speed that the PID controller wants to achieve
 // according to "On a Formal Model of Safe and Scalable Self-driving Cars" Shai Shalev-Shwartz, Shaked Shammah, Amnon Shashua
 // vehicle A is in front of vehicle B
-float AWheeledVehicleAIController::CalculateTargetSpeed(const float Speed, FHitResult &ClosestVehicle, const float DeltaTime, bool &accControl)
+float AWheeledVehicleAIController::CalculateTargetSpeedACC(const float Speed, FHitResult &ClosestVehicle, const float DeltaTime, bool &accControl)
 {
   float max_brake = 9.8f; //m/s^2
   float max_accel = 5.4f; //m/s^2
